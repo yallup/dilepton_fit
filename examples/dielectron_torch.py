@@ -4,9 +4,13 @@ import numpy as np
 import torch
 
 df = pd.read_csv("events.csv", header=None)
-x = df[1].to_numpy()
-y = df[3].to_numpy()
-yerr = np.sqrt(y)
+x = df[0].to_numpy()
+
+bw = (df[2] - df[1]).to_numpy()
+y = torch.round(torch.tensor(((df[2]-df[1]) * df[3]).to_numpy())/10)
+# y_plot= df[3].to_numpy()
+
+yerr = np.sqrt(y.detach())
 
 mask = y > 0.0
 # X_tensor = torch.tensor(x[mask], dtype=torch.float32)
@@ -92,7 +96,7 @@ class uniform_prior:
         return cube.squeeze()
 
 
-prior = uniform_prior(5)
+prior = uniform_prior(7)
 
 import torch
 from torch import nn
@@ -101,7 +105,7 @@ from torch import nn
 def loglike(y_pred, y):
     # define a log likelihood (basically a MSE loss), note in reality this should have the \Sigma included but as we are optimizing we don't care about that for now
     # return torch.mean((y_pred - y) ** 2 / y_err_tensor**2)
-    return nn.PoissonNLLLoss(log_input=False, full=True)(y, y_pred)
+    return nn.PoissonNLLLoss(log_input=False, full=True)(y_pred, y)
 
 
 N_iter = 100000
@@ -113,12 +117,20 @@ theta = torch.tensor(prior.rvs(), dtype=torch.float32, requires_grad=True)
 # This is overkill for this but we will use the adam optimizer
 optimizer = Adam([theta], lr=0.01)
 
+lowest_loss = float('inf')
+best_theta = None
+best_y = None
 losses = []
 for i in range(N_iter):
     optimizer.zero_grad()
     y_pred = dilepton_fit(theta)
 
     loss = loglike(y_pred, y_tensor)
+
+    if loss < lowest_loss:
+        lowest_loss = loss
+        best_theta = theta.detach().clone()
+        best_y= y_pred.detach().clone()
     if i % 10000 == 0:
         a[0].plot(
             X_tensor.detach().numpy(),
@@ -143,7 +155,7 @@ for i in range(N_iter):
 
 a[0].plot(
     X_tensor.detach().numpy(),
-    y_pred.detach().numpy(),
+    best_y.numpy(),
     c="C0",
     label=f"iter {i}",
 )
@@ -157,6 +169,6 @@ a_loss.set_ylabel("Loss")
 a_loss.set_xlabel("Iteration")
 f_loss.savefig("loss.pdf", bbox_inches="tight")
 
-print(theta)
+print(best_theta)
 
 f.savefig("dielectron_fit.pdf", bbox_inches="tight")
