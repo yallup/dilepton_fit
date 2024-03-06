@@ -2,18 +2,24 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+
 df = pd.read_csv("events.csv", header=None)
 x = df[1].to_numpy()
 y = df[3].to_numpy()
 yerr = np.sqrt(y)
 
-mask = y>0.
-X_tensor = torch.tensor(x[mask], dtype=torch.float32)
-y_tensor = torch.tensor(y[mask])
-y_err_tensor = torch.tensor(yerr[mask])
+mask = y > 0.0
+# X_tensor = torch.tensor(x[mask], dtype=torch.float32)
+# y_tensor = torch.tensor(y[mask])
+# y_err_tensor = torch.tensor(yerr[mask])
+
+
+X_tensor = torch.tensor(x, dtype=torch.float32)
+y_tensor = torch.tensor(y)
+
 
 def breit_w(x, mass=91.1876, width=2.4952):
-    bw = width / ((x - mass) ** 2 * width**2 / 4)
+    bw = width / ((x - mass) ** 2 - width**2 / 4)
     return bw
 
 
@@ -25,7 +31,8 @@ def dilepton_fit(theta, c=1):
         * (X_tensor / 13000)
         ** torch.sum(
             theta[..., 2:][..., None]
-            * np.log(X_tensor / 13000) ** np.arange(theta.shape[-1] - 2)[..., None],
+            * np.log(X_tensor / 13000)
+            ** np.arange(theta.shape[-1] - 2)[..., None],
             axis=-2,
         )
         * bw
@@ -35,7 +42,7 @@ def dilepton_fit(theta, c=1):
 
 
 theta = np.array([1.78, 1.5, -12.38, -4.295, -0.9191, -0.0845])
-# theta = np.array([1.78, 1.5, -12.38])
+# theta = np.array([1.78, 1.5, -12.38, 1.0])
 
 ## Can add an extra parameter to the power and it will roll over that dimension, but this needs to be fit for properly
 # theta = np.array([1.78e5, 1.5, -12.38, -4.295, -0.9191, -0.0845,-0.0019])
@@ -69,53 +76,81 @@ a[0].set_ylabel("Events / 10 GeV")
 from scipy.stats import multivariate_normal
 
 # prior = multivariate_normal(mean=theta, cov=np.eye(theta.shape[-1]) * .01)
-prior = multivariate_normal(mean=np.zeros_like(theta))
+# prior = multivariate_normal(mean=np.zeros_like(theta))
+
 
 class uniform_prior:
+    def __init__(self, n):
+        self.n = n
+
     def rvs(self, size=1):
-        cube = np.random.rand(size, len(theta)) * 10
-        cube[...,2:] = cube[...,2:] *-1
+        mod = 10.0 ** -np.arange(self.n - 2)
+        cube = np.random.rand(size, self.n) * 10
+        cube[..., 1] = cube[..., 1]
+        cube[..., 2:] = cube[..., 2:] * -1 * mod
+
         return cube.squeeze()
 
-prior = uniform_prior()
+
+prior = uniform_prior(5)
 
 import torch
+from torch import nn
 
 
 def loglike(y_pred, y):
     # define a log likelihood (basically a MSE loss), note in reality this should have the \Sigma included but as we are optimizing we don't care about that for now
-    return torch.mean((y_pred - y) ** 2 / y_err_tensor **2)
+    # return torch.mean((y_pred - y) ** 2 / y_err_tensor**2)
+    return nn.PoissonNLLLoss(log_input=False, full=True)(y, y_pred)
 
 
-N_iter = 60000
+N_iter = 100000
 from torch.optim import Adam
 
 # To write things in a torch-ey way we have to put things into tensors
-theta = torch.tensor(
-    prior.rvs(), dtype=torch.float32, requires_grad=True
-)
+theta = torch.tensor(prior.rvs(), dtype=torch.float32, requires_grad=True)
 
 # This is overkill for this but we will use the adam optimizer
 optimizer = Adam([theta], lr=0.01)
 
-losses=[]
+losses = []
 for i in range(N_iter):
     optimizer.zero_grad()
     y_pred = dilepton_fit(theta)
 
     loss = loglike(y_pred, y_tensor)
-    if i%10000==0:
-            a[0].plot(X_tensor.detach().numpy(), y_pred.detach().numpy(), c="red", label=f"iter {i}", alpha = i/N_iter)
-            a[1].plot(X_tensor.detach().numpy(), y_tensor.detach().numpy()/y_pred.detach().numpy(), c="red", label=f"iter {i}", alpha = i/N_iter)
-            print(loss)
+    if i % 10000 == 0:
+        a[0].plot(
+            X_tensor.detach().numpy(),
+            y_pred.detach().numpy(),
+            c="red",
+            label=f"iter {i}",
+            alpha=i / N_iter,
+        )
+        a[1].plot(
+            X_tensor.detach().numpy(),
+            y_tensor.detach().numpy() / y_pred.detach().numpy(),
+            c="red",
+            label=f"iter {i}",
+            alpha=i / N_iter,
+        )
+        print(loss)
     # Backward pass and optimize
+
     loss.backward()
     optimizer.step()
     losses.append(loss.detach().numpy())
 
+a[0].plot(
+    X_tensor.detach().numpy(),
+    y_pred.detach().numpy(),
+    c="C0",
+    label=f"iter {i}",
+)
+
 a[0].legend()
 
-f_loss,a_loss = plt.subplots()
+f_loss, a_loss = plt.subplots()
 a_loss.plot(losses)
 a_loss.set_yscale("log")
 a_loss.set_ylabel("Loss")
